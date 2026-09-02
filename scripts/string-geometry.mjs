@@ -141,6 +141,44 @@ function extraTargetIds(edge) {
   return extras.filter((id) => typeof id === 'string');
 }
 
+
+export const LABEL_CHAR_PX = 8;
+export const LABEL_PAD_X = 20;
+export const LABEL_HEIGHT = 28;
+export const LABEL_MIN_WIDTH = 48;
+export const LABEL_MAX_WIDTH = 240;
+export const LABEL_GUTTER = 0;
+
+export function labelSize(text) {
+  const width = Math.max(
+    LABEL_MIN_WIDTH,
+    Math.min(LABEL_MAX_WIDTH, String(text ?? "relates to").length * LABEL_CHAR_PX + LABEL_PAD_X)
+  );
+  return { width, height: LABEL_HEIGHT };
+}
+
+export function labelBox(edge, source, target, sag) {
+  const src = normalizeNode(source);
+  const dst = normalizeNode(target);
+  const size = labelSize(edge?.label);
+  const override = edge?.data?.labelPosition ?? edge?.labelPosition;
+  let mid;
+  if (override && Number.isFinite(override.x) && Number.isFinite(override.y)) {
+    mid = { x: override.x, y: override.y };
+  } else {
+    mid = sampleQuadratic(pinOf(src), pinOf(dst), normalizeSag(sag)).mid;
+  }
+  return {
+    left: mid.x - size.width / 2,
+    right: mid.x + size.width / 2,
+    top: mid.y - size.height / 2,
+    bottom: mid.y + size.height / 2,
+    width: size.width,
+    height: size.height,
+    mid,
+  };
+}
+
 /**
  * Audit any node/edge list. Nodes may use size/position or _w/_h internals.
  * Edges may use string ids or { kind, id } endpoints, plus extraTargets.
@@ -235,12 +273,33 @@ export function auditStrings(rawNodes, rawEdges, options = {}) {
     }
   }
 
+  const labelHits = [];
+  for (const edge of edges) {
+    const sourceId = endpointId(edge.source);
+    const targetId = endpointId(edge.target);
+    const source = byId.get(sourceId);
+    const target = byId.get(targetId);
+    if (!source || !target) continue;
+    const box = labelBox(edge, source, target, sag);
+    for (const node of nodes) {
+      if (!boxesOverlap(box, nodeRect(node))) continue;
+      labelHits.push({
+        path: edge.id,
+        label: String(edge.label ?? "relates to"),
+        card: node.id,
+        role: node.id === sourceId || node.id === targetId ? "endpoint" : "other",
+      });
+    }
+  }
+
   const unresolved = [];
   if (overlaps.length) unresolved.push(`${overlaps.length} node overlap(s)`);
   if (hits.length) {
     unresolved.push(`${hits.length} string path(s) cross unrelated cards`);
   }
-  if (crossings.length) unresolved.push(`${crossings.length} string crossing(s)`);
+  if (labelHits.length) {
+    unresolved.push(`${labelHits.length} edge label collision(s)`);
+  }
 
   return {
     relationshipSag: sag,
@@ -249,6 +308,8 @@ export function auditStrings(rawNodes, rawEdges, options = {}) {
     stringCrossings: crossings.length,
     edgeThroughNodes: hits.length,
     edgeCrossings: crossings.length,
+    labelCollisions: new Set(labelHits.map((hit) => hit.path)).size,
+    labelHits,
     unresolved,
     hits,
     crossings,

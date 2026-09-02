@@ -28,7 +28,7 @@ const quality = {
       100 -
         result.nodeOverlaps * 25 -
         result.stringsThroughCards * 8 -
-        result.stringCrossings * 4
+        (result.labelCollisions ?? 0) * 6
     ).toFixed(1)
   ),
   ...result,

@@ -6,7 +6,7 @@ compatibility: Redstrings MCP; Node.js for scripts/*.mjs
 metadata:
   author: solutionscay
   product: Redstrings
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Redstrings board

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
-import { auditStrings, endpointId } from './string-geometry.mjs';
+import { auditStrings, endpointId, labelBox, labelSize, LABEL_GUTTER } from './string-geometry.mjs';
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const options = input.options ?? {};
@@ -393,7 +393,11 @@ function attractNeighbors() {
       const dist = Math.hypot(pa.x - pb.x, pa.y - pb.y);
       const rest = sideRest(a, b);
       const gap = aabbGap(a, b);
-      if (gap >= 0 && gap <= padding * 1.45) continue;
+      const size = labelSize(edge.label);
+      const dx = point(b).x - point(a).x;
+      const dy = point(b).y - point(a).y;
+      const labelNeed = Math.abs(dx) >= Math.abs(dy) ? size.width + LABEL_GUTTER : size.height + LABEL_GUTTER;
+      if (gap >= 0 && gap <= Math.max(padding * 1.45, labelNeed)) continue;
       if (dist <= rest * 1.55 || dist === 0) continue;
       const pull = Math.min(48, (dist - rest * 1.2) * 0.3);
       const ux = (pb.x - pa.x) / dist;
@@ -513,6 +517,65 @@ function clearStringHits() {
   }
 }
 
+function nodeBox(node) {
+  return {
+    left: node.position.x,
+    top: node.position.y,
+    right: node.position.x + node._w,
+    bottom: node.position.y + node._h,
+  };
+}
+
+function edgeLabelBox(edge, source, target) {
+  return labelBox(edge, source, target, options.relationshipSag);
+}
+
+function openLabelGutters() {
+  for (let pass = 0; pass < 10; pass += 1) {
+    let moved = false;
+    for (const edge of edges) {
+      const a = byId.get(endpointId(edge.source) || edge.source);
+      const b = byId.get(endpointId(edge.target) || edge.target);
+      if (!a || !b) continue;
+      const label = edgeLabelBox(edge, a, b);
+      const hitsA = overlap(label, nodeBox(a));
+      const hitsB = overlap(label, nodeBox(b));
+      if (!hitsA && !hitsB) continue;
+      const pa = point(a);
+      const pb = point(b);
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
+      const size = labelSize(edge.label);
+      const aShare = a.focal && !b.focal ? 0 : b.focal && !a.focal ? 1 : 0.5;
+      const savedA = { ...a.position };
+      const savedB = { ...b.position };
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        const gapX = Math.abs(pb.x - pa.x) - (a._w + b._w) / 2;
+        const need = size.width + LABEL_GUTTER;
+        const extra = need - Math.max(0, gapX) + 2;
+        const dir = dx >= 0 ? 1 : -1;
+        a.position.x -= dir * extra * aShare;
+        b.position.x += dir * extra * (1 - aShare);
+      } else {
+        const gapY = Math.abs(pb.y - pa.y) - (a._h + b._h) / 2;
+        const need = size.height + LABEL_GUTTER;
+        const extra = need - Math.max(0, gapY) + 2;
+        const dir = dy >= 0 ? 1 : -1;
+        a.position.y -= dir * extra * aShare;
+        b.position.y += dir * extra * (1 - aShare);
+      }
+      if (collides(a, padding / 2) || collides(b, padding / 2)) {
+        a.position = savedA;
+        b.position = savedB;
+        continue;
+      }
+      moved = true;
+    }
+    if (!moved) break;
+    repairOverlaps();
+  }
+}
+
 function clearLabelCollisions() {
   for (let pass = 0; pass < 8; pass += 1) {
     let moved = false;
@@ -520,10 +583,10 @@ function clearLabelCollisions() {
       const source = byId.get(endpointId(edge.source) || edge.source);
       const target = byId.get(endpointId(edge.target) || edge.target);
       if (!source || !target) continue;
-      const label = labelBox(edge, source, target);
+      const label = edgeLabelBox(edge, source, target);
       for (const node of nodes) {
         if (node.id === source.id || node.id === target.id) continue;
-        if (!overlap(label, box(node, 0))) continue;
+        if (!overlap(label, nodeBox(node))) continue;
         const a = point(source);
         const b = point(target);
         const ex = b.x - a.x;
@@ -551,17 +614,6 @@ function maximumAligned(axis, tolerance = 12) {
     maximum = Math.max(maximum, end - start + 1);
   }
   return maximum;
-}
-
-function labelBox(edge, source, target) {
-  const a = point(source);
-  const b = point(target);
-  const text = String(edge.label ?? 'relates to');
-  const width = Math.max(48, Math.min(240, text.length * 8 + 20));
-  const label = edge.data?.labelPosition ?? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  const x = label.x - width / 2;
-  const y = label.y - 14;
-  return { left: x, right: x + width, top: y, bottom: y + 28 };
 }
 
 function metrics() {
@@ -592,14 +644,8 @@ function metrics() {
     const dist = Math.hypot(a.x - b.x, a.y - b.y);
     neighborDistances.push(dist);
     if (dist > neighborLimit(first.source, first.target)) distanceOutliers += 1;
-    if (
-      nodes.some(
-        (node) =>
-          node.id !== first.source.id &&
-          node.id !== first.target.id &&
-          overlap(labelBox(first.edge, first.source, first.target), box(node, 0))
-      )
-    ) {
+    const label = edgeLabelBox(first.edge, first.source, first.target);
+    if (nodes.some((node) => overlap(label, nodeBox(node)))) {
       labelCollisions += 1;
     }
   }
@@ -641,7 +687,6 @@ function metrics() {
   const unresolved = [];
   if (nodeOverlaps) unresolved.push(`${nodeOverlaps} node overlap(s)`);
   if (stringAudit.edgeThroughNodes) unresolved.push(`${stringAudit.edgeThroughNodes} string path(s) cross unrelated cards`);
-  if (stringAudit.edgeCrossings) unresolved.push(`${stringAudit.edgeCrossings} string crossing(s)`);
   if (labelCollisions) unresolved.push(`${labelCollisions} edge label collision(s)`);
   if (excessiveAlignment) unresolved.push('freeform cards retain excessive shared alignment');
   if (directionalImbalance) unresolved.push('freeform layout does not use both canvas axes');
@@ -651,7 +696,6 @@ function metrics() {
     100 -
       nodeOverlaps * 25 -
       stringAudit.edgeThroughNodes * 8 -
-      stringAudit.edgeCrossings * 4 -
       labelCollisions * 6 -
       distanceOutliers * 8 -
       excessiveAlignment * 3 -
@@ -667,6 +711,7 @@ function metrics() {
     stringsThroughCards: stringAudit.stringsThroughCards,
     stringCrossings: stringAudit.stringCrossings,
     labelCollisions,
+    labelHits: stringAudit.labelHits ?? [],
     distanceOutliers,
     meanNeighborDistance,
     maxNeighborDistance,
@@ -687,6 +732,8 @@ const repairs = repairOverlaps();
 if (freeformArchetypes.has(archetype)) {
   attractNeighbors();
   relocateOutliers();
+  clearStringHits();
+  openLabelGutters();
   clearStringHits();
   clearLabelCollisions();
 }
