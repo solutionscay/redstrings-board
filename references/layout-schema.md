@@ -55,13 +55,15 @@ The result contains the original nodes and edges with updated positions, plus:
 }
 ```
 
-The helper accepts extra node and edge fields and carries them through unchanged. Dimensions default to 220 × 140, labels are approximated at 8 pixels per character, and positions are in Redstrings world coordinates.
+The helper carries extra node and edge fields through unchanged. Card size defaults to 220 x 140. Label width is estimated at 8 px per character. Positions are Redstrings world coordinates. `padding` has a floor of 40; smaller values are raised to 40. `mode` is echoed back in the output but does not change the algorithm: `generate` and `arrange` both build a complete composition from scratch.
 
-Both `generate` and explicit `arrange` mode produce a complete composition. Investigation, research, and relationship archetypes apply deterministic 20–50 pixel horizontal and 30–70 pixel vertical staggering. Timeline, process, and hierarchy archetypes retain structural alignment. `maxSharedX` and `maxSharedY` report the largest set of card origins within 12 pixels of one another; freeform layouts flag values above three. `aspectRatio` is layout width divided by height. Freeform boards with at least four cards flag ratios below 0.65 or above 1.85 so agents use horizontal and vertical space instead of producing a tall stack or flat strip.
+Investigation, research, and relationship archetypes place each card in one of sixteen slots around the card it connects to: the eight compass directions plus shallow and steep diagonals. Each slot is pushed outward until the relationship label clears both cards, so a gap is 40 to 60 px or the label width, whichever is larger. A slot is scored on cluster size, group closeness, and the defects it would create: strings through cards, string crossings, and labels on cards. After placement the helper pulls connected cards together, repairs overlaps and label hits, re-seats any card that still owns a defect, and squeezes the cluster toward the focal card while defects stay at zero. A deterministic stagger of 20 to 50 px horizontally and 30 to 70 px vertically breaks up rows and columns. Timeline, process, and hierarchy archetypes keep their structural alignment.
+
+`maxSharedX` and `maxSharedY` report the largest set of card origins within 12 px of one another. Freeform layouts flag values above three. `aspectRatio` is layout width divided by height. A freeform board of four or more cards is flagged when the ratio falls below 0.65 or rises above 1.85, so the board uses both axes instead of becoming a tall stack or a flat strip.
 
 ## String audit
 
-Yarn is not a straight center-to-center line. Pins sit at the top-center of each card (`pinOffset` shifts that point). The curve sags with project `relationshipSag` (0–200, default 50). `layout-board.mjs` uses the same geometry when it scores `edgeThroughNodes` / `edgeCrossings`. After placing any board, also run:
+Yarn is not a straight line between card centers. Pins sit at the top-center of each card, shifted by `pinOffset` when present, and the curve sags by the project's `relationshipSag` (0 to 200, default 50). `layout-board.mjs` uses the same geometry when it scores `edgeThroughNodes` and `edgeCrossings`. After placing any board, run:
 
 ```sh
 node scripts/audit-strings.mjs
@@ -77,49 +79,49 @@ Stdin is a board dump. A `get_board` payload works as-is. So does:
 }
 ```
 
-`source` / `target` may be id strings or `{ "kind": "node", "id": "a" }`. Extra targets are sampled from the main curve midpoint.
+`source` and `target` may be id strings or `{ "kind": "node", "id": "a" }`. Extra targets branch from the main curve's midpoint.
 
-Exit 0 only when there are no node overlaps, no string-through-unrelated-card hits, and no string crossings. Exit 1 otherwise; stdout still contains the report. Endpoint cards and crossings within 70px of a shared pin are allowed.
+The script exits 1 when it finds node overlaps, strings through unrelated cards, or label collisions. Stdout still holds the full report. String crossings are counted in `stringCrossings` but do not change the exit code, so check that field yourself. Endpoint cards are never string hits, and crossings within 70 px of a shared pin are allowed.
 
-Repair rules (any archetype):
+Repair rules for any archetype:
 
 - An edge may only touch the cards it connects.
 - Two edges may not cross except at a shared pin.
 - Put connected cards in neighboring cells, or on a triangle with an empty corner.
 - Do not span a third card in the same row or column.
-- Give a long-distance edge an empty corridor, or move the pair together.
-- If a multi-target relationship branches across other cards, split it into local edges or gather the targets into a fan around the source.
+- Give a long edge an empty corridor, or move the pair together.
+- Prefer horizontal or diagonal hops. Both pins sit on the top edge, so a vertical hop needs about a card height of whitespace before its label clears the upper card. The helper widens vertical hops for you; do the same when you place by hand.
+- If a multi-target relationship branches across other cards, split it into local edges or fan the targets around the source.
 
 ## Compactness
 
-Organic archetypes pack neighbors around anchors, then attract along edges. They do not place cards on a large ring.
+Organic archetypes pack neighbors around anchors, then pull connected cards together along their edges. They do not place cards on a large ring.
 
-Rest length between two cards is max((w1+w2)/2, (h1+h2)/2) plus padding. A neighbor is an outlier when center-to-center distance is more than 2.5 times rest length.
+Rest length between two cards is max((w1+w2)/2, (h1+h2)/2) plus padding. A neighbor is an outlier when the center-to-center distance is more than 2.5 times rest length.
 
-Quality also reports meanNeighborDistance, maxNeighborDistance, clusterBounds, and compactnessRejects.
+Quality also reports `meanNeighborDistance`, `maxNeighborDistance`, `clusterBounds`, and `compactnessRejects`.
 
-Reject when distanceOutliers is not 0, compactnessRejects is not empty, or a freeform board of 4+ cards is wider than 1600px or taller than 1600px.
+Reject when `distanceOutliers` is not 0, when `compactnessRejects` is not empty, or when a freeform board of four or more cards is wider or taller than 1600 px.
 
 ## Worked 16-card example
 
-Investigation generate, seed 53, padding 48. Sixteen cards, sixteen edges (people, places, evidence, orgs around a focal victim). Helpers use actual sizes (180-240 wide, 130-200 tall).
+Investigation, generate mode, seed 53, padding 48. Sixteen cards and sixteen edges: people, places, evidence, and orgs around a focal victim. Cards use real sizes, 180 to 240 wide and 130 to 200 tall.
 
-Stdout quality from `scripts/test-compactness.mjs`:
+Input (ids only): focal `victim`; people `suspect`, `partner`, `witness`; places `warehouse`, `apartment`, `cafe`, `docks`; evidence `photo`, `ledger`, `print`, `message`; orgs `shipping`, `shell`, `union`, `lender`. Edges: victim-suspect, victim-partner, victim-witness, suspect-warehouse, suspect-apartment, partner-cafe, witness-docks, warehouse-photo, warehouse-ledger, apartment-print, cafe-message, docks-shipping, shipping-shell, shell-union, ledger-lender, suspect-partner.
+
+Compactness fields printed by `scripts/test-compactness.mjs`:
 
 ```json
 {
   "nodeOverlaps": 0,
   "distanceOutliers": 0,
-  "meanNeighborDistance": 247.8,
-  "maxNeighborDistance": 336.3,
+  "meanNeighborDistance": 340.9,
+  "maxNeighborDistance": 419.6,
   "compactnessRejects": [],
-  "bounds": { "x": -150, "y": -869, "width": 987, "height": 1390 }
+  "bounds": { "x": -224, "y": -172, "width": 1567, "height": 1301 }
 }
 ```
 
-Each tree edge is one hop (rest length around 250-280px). The extra people edge (suspect-partner) stays under 2.5 x rest. Width and height are each under 1600. A 2000 x 2000 ring with 900px yarns is a failed layout.
+Each tree edge is one hop, with rest length around 250 to 280 px. The extra suspect-partner edge stays under 2.5 x rest. Width and height are both under 1600. The same run reports no strings through cards, no crossings, no label collisions, and an empty `unresolved` list, and the compactness test asserts all of that. For contrast, a 2000 x 2000 ring with 900 px yarns is a failed layout.
 
-`layout-board.mjs` always prints this JSON to stdout, even if `unresolved` is not empty.
-
-
-Input (ids only): focal `victim`; people `suspect`, `partner`, `witness`; places `warehouse`, `apartment`, `cafe`, `docks`; evidence `photo`, `ledger`, `print`, `message`; orgs `shipping`, `shell`, `union`, `lender`. Edges: victim-suspect, victim-partner, victim-witness, suspect-warehouse, suspect-apartment, partner-cafe, witness-docks, warehouse-photo, warehouse-ledger, apartment-print, cafe-message, docks-shipping, shipping-shell, shell-union, ledger-lender, suspect-partner.
+Other seeds on the same input are not all clean. Across seeds 1 to 30, about two thirds pass every check; the rest report one or two defects. That is why the workflow says to adjust groups or the seed and rerun.

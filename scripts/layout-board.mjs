@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
-import { auditStrings, endpointId, labelBox, labelSize, LABEL_GUTTER } from './string-geometry.mjs';
+import {
+  auditStrings,
+  endpointId,
+  labelBox,
+  labelSize,
+  normalizeNode,
+  normalizeSag,
+  pathHitsNode,
+  pinOf,
+  sampleQuadratic,
+  segmentsCross,
+  LABEL_GUTTER,
+  PIN_NEAR,
+} from './string-geometry.mjs';
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const options = input.options ?? {};
@@ -29,6 +42,14 @@ for (const edge of edges) {
     adjacency.get(source).add(target);
     adjacency.get(target).add(source);
   }
+}
+
+function edgesBetween(a, b) {
+  return edges.filter((edge) => {
+    const s = endpointId(edge.source) || edge.source;
+    const t = endpointId(edge.target) || edge.target;
+    return (s === a.id && t === b.id) || (s === b.id && t === a.id);
+  });
 }
 
 function stableUnit(key) {
@@ -75,6 +96,9 @@ function neighborLimit(a, b) {
   return 2.5 * sideRest(a, b);
 }
 
+// Eight compass slots plus shallow and steep diagonals. The extra angles
+// matter because pins sit on the top edge: a 45 degree string often grazes
+// the corner of whatever card sits directly above or below the anchor.
 const DIRS = [
   [1, 0],
   [-1, 0],
@@ -84,6 +108,14 @@ const DIRS = [
   [-1, -1],
   [1, 1],
   [-1, 1],
+  [1, -0.5],
+  [-1, -0.5],
+  [1, 0.5],
+  [-1, 0.5],
+  [0.5, -1],
+  [-0.5, -1],
+  [0.5, 1],
+  [-0.5, 1],
 ];
 
 function collides(node, extra = padding / 2) {
@@ -103,8 +135,8 @@ function candidatePosition(parent, child, dirIndex, scale = 1) {
   const signV = Math.floor(dirIndex / 2) % 2 === 0 ? -1 : 1;
   let x = origin.x - child._w / 2 + dx * gapX;
   let y;
-  if (dy < 0) y = origin.y - upHop;
-  else if (dy > 0) y = origin.y + downHop;
+  if (dy < 0) y = origin.y - upHop * Math.abs(dy);
+  else if (dy > 0) y = origin.y + downHop * dy;
   else y = origin.y;
   if (dy === 0) {
     y = parent.position.y + (parent._h - child._h) / 2 + signV * verticalMagnitude;
@@ -114,7 +146,106 @@ function candidatePosition(parent, child, dirIndex, scale = 1) {
     x += signH * horizontalMagnitude * 0.35;
     y += signV * verticalMagnitude * 0.35;
   }
+  return growForLabel(parent, child, { x, y }, dx, dy);
+}
+
+// Pins sit on the top edge, so a label can land inside an endpoint card even
+// when the whitespace gap is respected. Push the child outward along the slot
+// direction until every label between the pair clears both cards.
+function growForLabel(parent, child, pos, dx, dy) {
+  const pair = edgesBetween(parent, child);
+  if (!pair.length || (dx === 0 && dy === 0)) return pos;
+  const saved = { ...child.position };
+  const norm = Math.hypot(dx, dy);
+  const ux = dx / norm;
+  const uy = dy / norm;
+  let { x, y } = pos;
+  for (let step = 0; step < 24; step += 1) {
+    setPosition(child, x, y);
+    const clear = pair.every((edge) => {
+      const label = edgeLabelBox(edge, parent, child);
+      return !overlap(label, nodeBox(parent)) && !overlap(label, nodeBox(child));
+    });
+    if (clear) break;
+    x += ux * 12;
+    y += uy * 12;
+  }
+  child.position = saved;
   return { x, y };
+}
+
+function edgeEnds(edge) {
+  return {
+    a: byId.get(endpointId(edge.source) || edge.source),
+    b: byId.get(endpointId(edge.target) || edge.target),
+  };
+}
+
+function pathsCross(p, q) {
+  const shared = [p.a, p.b].filter((node) => node === q.a || node === q.b);
+  for (let i = 0; i < p.points.length - 1; i += 1) {
+    for (let j = 0; j < q.points.length - 1; j += 1) {
+      if (!segmentsCross(p.points[i], p.points[i + 1], q.points[j], q.points[j + 1])) continue;
+      const mid = {
+        x: (p.points[i].x + p.points[i + 1].x) / 2,
+        y: (p.points[i].y + p.points[i + 1].y) / 2,
+      };
+      const nearShared = shared.some((node) => {
+        const pinPoint = pinOf(normalizeNode(node));
+        return Math.hypot(mid.x - pinPoint.x, mid.y - pinPoint.y) < PIN_NEAR;
+      });
+      if (!nearShared) return true;
+    }
+  }
+  return false;
+}
+
+// Count the defects that involve one card at its current position: its
+// strings through other cards, its labels on any card, its strings crossing
+// other strings, and other cards' strings through it. Only placed cards count.
+function localDefects(node) {
+  const sag = normalizeSag(options.relationshipSag);
+  const live = (other) => other === node || other._placed;
+  const paths = [];
+  for (const edge of edges) {
+    const { a, b } = edgeEnds(edge);
+    if (!a || !b || a === b || !live(a) || !live(b)) continue;
+    paths.push({
+      a,
+      b,
+      edge,
+      points: sampleQuadratic(pinOf(normalizeNode(a)), pinOf(normalizeNode(b)), sag).points,
+    });
+  }
+  const mine = paths.filter((path) => path.a === node || path.b === node);
+  const theirs = paths.filter((path) => path.a !== node && path.b !== node);
+  const nodeNorm = normalizeNode(node);
+  let defects = 0;
+  for (const path of mine) {
+    for (const other of nodes) {
+      if (!live(other) || other === path.a || other === path.b) continue;
+      if (pathHitsNode(path.points, normalizeNode(other), 6)) defects += 1;
+    }
+    const label = edgeLabelBox(path.edge, path.a, path.b);
+    for (const other of nodes) {
+      if (live(other) && overlap(label, nodeBox(other))) defects += 1;
+    }
+    for (const other of theirs) {
+      if (pathsCross(path, other)) defects += 1;
+    }
+  }
+  for (const other of theirs) {
+    if (pathHitsNode(other.points, nodeNorm, 6)) defects += 1;
+  }
+  return defects;
+}
+
+function stringPenaltyAt(child, pos) {
+  const saved = { ...child.position };
+  setPosition(child, pos.x, pos.y);
+  const defects = localDefects(child);
+  child.position = saved;
+  return defects * 40000;
 }
 
 function tryPlaceNear(parent, child, dirIndex, scale = 1) {
@@ -140,16 +271,14 @@ function boundsWith(child, position) {
   return { width: maxX - minX, height: maxY - minY };
 }
 
-function placeAround(parent, child, used, preferHorizontal = false) {
-  const ring = Math.floor(used / DIRS.length);
-  if (preferHorizontal) {
-    if (tryPlaceNear(parent, child, 0, 1) || tryPlaceNear(parent, child, 1, 1)) return true;
-  }
+function evaluateSlots(parent, child, ring = 0) {
   const scales = [1 + ring * 0.32, 1.14 + ring * 0.32, 1.28 + ring * 0.32];
-  const kin = nodes.filter((node) => node._placed && child.group && node.group === child.group);
+  const kin = nodes.filter(
+    (node) => node._placed && node !== child && child.group && node.group === child.group
+  );
   const extraNeighbors = [...(adjacency.get(child.id) ?? [])]
     .map((id) => byId.get(id))
-    .filter((node) => node && node._placed && node !== parent);
+    .filter((node) => node && node._placed && node !== parent && node !== child);
   let best = null;
   for (let scaleIndex = 0; scaleIndex < scales.length; scaleIndex += 1) {
     const scale = scales[scaleIndex];
@@ -160,6 +289,7 @@ function placeAround(parent, child, used, preferHorizontal = false) {
       const blocked = collides(child);
       child.position = saved;
       if (blocked) continue;
+      const hard = stringPenaltyAt(child, pos);
       const bounds = boundsWith(child, pos);
       const span = bounds.width + bounds.height;
       const spread = Math.max(bounds.width, bounds.height);
@@ -184,15 +314,141 @@ function placeAround(parent, child, used, preferHorizontal = false) {
         scaleIndex * 14000 +
         dir * 2 +
         groupPenalty +
-        neighborPenalty;
-      if (!best || score < best.score) best = { pos, score };
+        neighborPenalty +
+        hard;
+      if (!best || score < best.score) best = { pos, score, hard };
     }
-    if (best) break;
+    if (best && best.hard === 0) break;
   }
+  return best;
+}
+
+function placeAround(parent, child, used, preferHorizontal = false) {
+  const ring = Math.floor(used / DIRS.length);
+  if (preferHorizontal) {
+    for (const dir of [0, 1]) {
+      const pos = candidatePosition(parent, child, dir, 1);
+      setPosition(child, pos.x, pos.y);
+      if (!collides(child) && stringPenaltyAt(child, pos) === 0) {
+        child._placed = true;
+        return true;
+      }
+    }
+  }
+  const best = evaluateSlots(parent, child, ring);
   if (!best) return searchNear(parent, child, ring);
   setPosition(child, best.pos.x, best.pos.y);
   child._placed = true;
   return true;
+}
+
+// Move a card that blocks someone else's string to a clean slot around one of
+// its own neighbors.
+function reseatBlocker(blocker) {
+  const anchors = [...(adjacency.get(blocker.id) ?? [])]
+    .map((id) => byId.get(id))
+    .filter((node) => node && node._placed);
+  return anchors.some((anchor) => reseat(anchor, blocker));
+}
+
+// Move one endpoint of a bad string to the best clean slot around the other.
+function reseat(anchor, movable) {
+  if (movable.focal) return false;
+  const saved = { ...movable.position };
+  movable._placed = false;
+  let best = null;
+  for (let ring = 0; ring < 3 && !best; ring += 1) {
+    const candidate = evaluateSlots(anchor, movable, ring);
+    if (candidate && candidate.hard === 0) best = candidate;
+  }
+  movable._placed = true;
+  if (best) {
+    setPosition(movable, best.pos.x, best.pos.y);
+    return true;
+  }
+  movable.position = saved;
+  return false;
+}
+
+// Re-seat one endpoint of every remaining bad string, crossing, or label hit.
+function finalPass() {
+  for (let pass = 0; pass < 12; pass += 1) {
+    const audit = auditStrings(nodes, edges, { relationshipSag: options.relationshipSag, padding: 6 });
+    const byEdgeId = new Map(edges.map((edge) => [edge.id, edge]));
+    const pairs = [];
+    const pushPath = (pathId) => {
+      const edge = byEdgeId.get(String(pathId).split(':')[0]);
+      if (!edge) return;
+      const { a, b } = edgeEnds(edge);
+      if (a && b) pairs.push([a, b]);
+    };
+    const blockers = [];
+    for (const hit of audit.hits) {
+      pushPath(hit.path);
+      const blocker = byId.get(hit.card);
+      if (blocker) blockers.push(blocker);
+    }
+    for (const crossing of audit.crossings) {
+      pushPath(crossing.a);
+      pushPath(crossing.b);
+    }
+    for (const hit of audit.labelHits) pushPath(hit.path);
+    if (!pairs.length) break;
+    let moved = false;
+    for (const [a, b] of pairs) {
+      const first = (adjacency.get(a.id)?.size ?? 0) <= (adjacency.get(b.id)?.size ?? 0) ? a : b;
+      const second = first === a ? b : a;
+      if (reseat(second, first) || reseat(first, second)) {
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) {
+      for (const blocker of blockers) {
+        if (reseatBlocker(blocker)) {
+          moved = true;
+          break;
+        }
+      }
+    }
+    if (!moved) break;
+    repairOverlaps();
+  }
+}
+
+// Pull every card toward the focal card while its local defects do not grow.
+function squeeze() {
+  const focal = pickFocal();
+  if (!focal) return;
+  for (let pass = 0; pass < 6; pass += 1) {
+    let moved = false;
+    const target = point(focal);
+    const order = nodes
+      .filter((node) => node !== focal)
+      .sort((a, b) => {
+        const da = Math.hypot(point(a).x - target.x, point(a).y - target.y);
+        const db = Math.hypot(point(b).x - target.x, point(b).y - target.y);
+        return db - da || a._index - b._index;
+      });
+    for (const node of order) {
+      const allowed = localDefects(node);
+      for (let step = 0; step < 12; step += 1) {
+        const center = point(node);
+        const dx = target.x - center.x;
+        const dy = target.y - center.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 12) break;
+        const old = { ...node.position };
+        setPosition(node, node.position.x + (dx / dist) * 12, node.position.y + (dy / dist) * 12);
+        if (collides(node, padding / 2) || localDefects(node) > allowed) {
+          node.position = old;
+          break;
+        }
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
 }
 
 function searchNear(parent, child, ring = 0) {
@@ -306,9 +562,7 @@ function layoutCompact() {
       const preferHorizontal = Boolean(parent.focal) && used === 0;
       placeAround(parent, child, used, preferHorizontal);
       if (!child._placed) {
-        const rest = sideRest(parent, child);
-        const pc = point(parent);
-        setPosition(child, pc.x + parent._w + padding, pc.y);
+        setPosition(child, parent.position.x + parent._w + padding, parent.position.y);
         child._placed = true;
       }
       childCount.set(currentId, used + 1);
@@ -320,8 +574,7 @@ function layoutCompact() {
     const kin =
       nodes.find((other) => other._placed && other.group && other.group === node.group) ?? focal;
     if (!searchNear(kin, node)) {
-      const pc = point(kin);
-      setPosition(node, pc.x + kin._w + padding, pc.y);
+      setPosition(node, kin.position.x + kin._w + padding, kin.position.y);
       node._placed = true;
     }
   }
@@ -511,6 +764,8 @@ function clearStringHits() {
       else if (rotateChild(source, target, -side * 0.22, 1.04)) moved = true;
       else if (rotateChild(source, target, -side * 0.38, 1.08)) moved = true;
       else if (nudge(blocker, nx * side * 40, ny * side * 40)) moved = true;
+      else if (reseat(source, target) || reseat(target, source)) moved = true;
+      else if (reseatBlocker(blocker)) moved = true;
     }
     if (!moved) break;
     repairOverlaps();
@@ -531,40 +786,56 @@ function edgeLabelBox(edge, source, target) {
 }
 
 function openLabelGutters() {
+  const step = 16;
+  const maxSteps = 20;
   for (let pass = 0; pass < 10; pass += 1) {
     let moved = false;
     for (const edge of edges) {
       const a = byId.get(endpointId(edge.source) || edge.source);
       const b = byId.get(endpointId(edge.target) || edge.target);
       if (!a || !b) continue;
-      const label = edgeLabelBox(edge, a, b);
-      const hitsA = overlap(label, nodeBox(a));
-      const hitsB = overlap(label, nodeBox(b));
-      if (!hitsA && !hitsB) continue;
+      const hitsEndpoint = () => {
+        const label = edgeLabelBox(edge, a, b);
+        return overlap(label, nodeBox(a)) || overlap(label, nodeBox(b));
+      };
+      if (!hitsEndpoint()) continue;
       const pa = point(a);
       const pb = point(b);
       const dx = pb.x - pa.x;
       const dy = pb.y - pa.y;
-      const size = labelSize(edge.label);
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      const dir = horizontal ? (dx >= 0 ? 1 : -1) : dy >= 0 ? 1 : -1;
       const aShare = a.focal && !b.focal ? 0 : b.focal && !a.focal ? 1 : 0.5;
       const savedA = { ...a.position };
       const savedB = { ...b.position };
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        const gapX = Math.abs(pb.x - pa.x) - (a._w + b._w) / 2;
-        const need = size.width + LABEL_GUTTER;
-        const extra = need - Math.max(0, gapX) + 2;
-        const dir = dx >= 0 ? 1 : -1;
-        a.position.x -= dir * extra * aShare;
-        b.position.x += dir * extra * (1 - aShare);
-      } else {
-        const gapY = Math.abs(pb.y - pa.y) - (a._h + b._h) / 2;
-        const need = size.height + LABEL_GUTTER;
-        const extra = need - Math.max(0, gapY) + 2;
-        const dir = dy >= 0 ? 1 : -1;
-        a.position.y -= dir * extra * aShare;
-        b.position.y += dir * extra * (1 - aShare);
+      const shares = a.focal ? [[0, 1]] : b.focal ? [[1, 0]] : [[aShare, 1 - aShare], [0, 1], [1, 0]];
+      let cleared = false;
+      for (const [sa, sb] of shares) {
+        for (const size of [step, step / 2, step / 4]) {
+          a.position = { ...savedA };
+          b.position = { ...savedB };
+          for (let count = 0; count < maxSteps && !cleared; count += 1) {
+            const beforeA = { ...a.position };
+            const beforeB = { ...b.position };
+            if (horizontal) {
+              a.position.x -= dir * size * sa;
+              b.position.x += dir * size * sb;
+            } else {
+              a.position.y -= dir * size * sa;
+              b.position.y += dir * size * sb;
+            }
+            if (collides(a, padding / 2) || collides(b, padding / 2)) {
+              a.position = beforeA;
+              b.position = beforeB;
+              break;
+            }
+            if (!hitsEndpoint()) cleared = true;
+          }
+          if (cleared) break;
+        }
+        if (cleared) break;
       }
-      if (collides(a, padding / 2) || collides(b, padding / 2)) {
+      if (!cleared) {
         a.position = savedA;
         b.position = savedB;
         continue;
@@ -598,6 +869,7 @@ function clearLabelCollisions() {
         const side = (c.x - a.x) * nx + (c.y - a.y) * ny >= 0 ? 1 : -1;
         if (nudge(node, nx * side * 20, ny * side * 20)) moved = true;
         else if (rotateChild(source, target, -side * 0.16, 1.03)) moved = true;
+        else if (reseat(source, target) || reseat(target, source)) moved = true;
       }
     }
     if (!moved) break;
@@ -687,6 +959,7 @@ function metrics() {
   const unresolved = [];
   if (nodeOverlaps) unresolved.push(`${nodeOverlaps} node overlap(s)`);
   if (stringAudit.edgeThroughNodes) unresolved.push(`${stringAudit.edgeThroughNodes} string path(s) cross unrelated cards`);
+  if (stringAudit.stringCrossings) unresolved.push(`${stringAudit.stringCrossings} string crossing(s)`);
   if (labelCollisions) unresolved.push(`${labelCollisions} edge label collision(s)`);
   if (excessiveAlignment) unresolved.push('freeform cards retain excessive shared alignment');
   if (directionalImbalance) unresolved.push('freeform layout does not use both canvas axes');
@@ -696,6 +969,7 @@ function metrics() {
     100 -
       nodeOverlaps * 25 -
       stringAudit.edgeThroughNodes * 8 -
+      stringAudit.stringCrossings * 4 -
       labelCollisions * 6 -
       distanceOutliers * 8 -
       excessiveAlignment * 3 -
@@ -736,6 +1010,9 @@ if (freeformArchetypes.has(archetype)) {
   openLabelGutters();
   clearStringHits();
   clearLabelCollisions();
+  finalPass();
+  squeeze();
+  finalPass();
 }
 nodes.forEach((node) => setPosition(node, node.position.x, node.position.y));
 const quality = metrics();

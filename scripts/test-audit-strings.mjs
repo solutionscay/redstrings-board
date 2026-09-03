@@ -70,7 +70,7 @@ const diagonals = run({
   ],
   options: { relationshipSag: 50 },
 });
-assert.equal(diagonals.ok, true);
+assert.equal(diagonals.ok, false, 'a string crossing must fail the audit');
 assert.ok(diagonals.report.quality.stringCrossings >= 1);
 
 const extras = run({

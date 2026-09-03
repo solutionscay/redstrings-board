@@ -128,7 +128,7 @@ function boxesOverlap(a, b) {
   );
 }
 
-function pathHitsNode(points, node, padding) {
+export function pathHitsNode(points, node, padding) {
   const box = nodeRect(node, padding);
   for (let index = 0; index < points.length - 1; index += 1) {
     if (segmentHitsRect(points[index], points[index + 1], box)) return true;
@@ -147,7 +147,7 @@ export const LABEL_PAD_X = 20;
 export const LABEL_HEIGHT = 28;
 export const LABEL_MIN_WIDTH = 48;
 export const LABEL_MAX_WIDTH = 240;
-export const LABEL_GUTTER = 0;
+export const LABEL_GUTTER = 12;
 
 export function labelSize(text) {
   const width = Math.max(
@@ -296,6 +296,9 @@ export function auditStrings(rawNodes, rawEdges, options = {}) {
   if (overlaps.length) unresolved.push(`${overlaps.length} node overlap(s)`);
   if (hits.length) {
     unresolved.push(`${hits.length} string path(s) cross unrelated cards`);
+  }
+  if (crossings.length) {
+    unresolved.push(`${crossings.length} string crossing(s)`);
   }
   if (labelHits.length) {
     unresolved.push(`${labelHits.length} edge label collision(s)`);

@@ -73,6 +73,10 @@ assert.ok(
   `maxNeighborDistance ${quality.maxNeighborDistance} must be < 900`
 );
 assert.deepEqual(quality.compactnessRejects, [], 'compactnessRejects must be empty');
+assert.equal(quality.edgeThroughNodes, 0, 'no string may cross an unrelated card');
+assert.equal(quality.stringCrossings, 0, 'no strings may cross');
+assert.equal(quality.labelCollisions, 0, 'no label may sit on a card');
+assert.deepEqual(quality.unresolved, [], 'worked example must pass the full gate');
 
 console.log('compactness tests passed');
 console.log(
