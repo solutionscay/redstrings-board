@@ -2,11 +2,10 @@
 name: redstrings-board
 description: Create or update Redstrings detective boards over MCP. Read the active board, reuse cards, add missing evidence, and pack related cards into tight clusters. Use for any Redstrings, detective board, card, relationship, or board layout request. Run the compact layout helper only for new boards or explicit arrange requests.
 license: MIT
-compatibility: Redstrings MCP; Node.js for scripts/*.mjs
 metadata:
   author: solutionscay
   product: Redstrings
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Redstrings board
@@ -28,8 +27,15 @@ MCP cannot open a case file. If no project is open in Redstrings, stop and say s
 ## MCP tools
 
 - `redstrings_get_active_context`: project, board, revision, dirty flag, selection
-- `redstrings_list_boards`
-- `redstrings_create_board`: blank board in the open project, takes `name` only
+- `redstrings_list_boards`: flat board list with stable ids, paths, parent fields, and `treeChecksum`
+- `redstrings_get_project_tree`: logical board nesting and physical storage folders
+- `redstrings_create_board`: blank board; accepts `parentBoardPath` and `folderPosition`
+- `redstrings_reparent_board`: change logical nesting for an existing board
+- `redstrings_create_project_folder`: create a physical storage folder
+- `redstrings_move_project_item`: move a board or folder in physical storage
+- `redstrings_rename_project_item`: rename a board or folder
+- `redstrings_pin_board_folder`: pin a folder for an existing board on the active board
+- `redstrings_retarget_board_folder`: change the board opened by an existing folder
 - `redstrings_get_board` and `redstrings_get_board_summary`: default to the active board
 - `redstrings_edit_board`: one atomic, undoable batch; pass `expectedRevision` and `expectedChecksum`
 - `redstrings_upload_asset_to_card`: `{ nodeId, sourcePath }`
@@ -38,6 +44,12 @@ MCP cannot open a case file. If no project is open in Redstrings, stop and say s
 - `redstrings_get_sync_status`
 
 `add_edge` source and target are objects: `{ "kind": "node", "id": "card-a" }`.
+
+Before a project tree change, read `redstrings_get_project_tree`. Pass its
+`treeChecksum` as `expectedTreeChecksum`. Use `dryRun` before a move or
+re-parent when the target is not obvious. Logical nesting uses board parents.
+Physical storage uses folder paths. Use the dedicated pin and retarget tools
+for board folders. Do not add a system `board` node with `redstrings_edit_board`.
 
 ## Content rules
 

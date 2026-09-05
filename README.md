@@ -29,6 +29,7 @@ Redstrings exposes these tools to a connected agent. Reads default to the board 
 | `redstrings_create_board` | Create and open a blank board |
 | `redstrings_edit_board` | Apply one atomic, undoable batch of edits |
 | `redstrings_upload_asset_to_card` | Attach a local file to an existing card |
+| `redstrings_export_board_image` | Return a PNG image of the active board |
 
 Full request shapes and edit operations are in [SKILL.md](SKILL.md).
 
